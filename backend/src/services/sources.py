@@ -19,9 +19,20 @@ def save_source(db,user,data,id=None):
     s=source_or_404(db,id) if id else Source(key='user-'+secrets.token_hex(10))
     for k,v in data.model_dump().items():setattr(s,k,v)
     db.add(s);db.flush();log(db,user,'source.updated' if id else 'source.created',s.id,s.name);db.commit();return row(s)
-def list_records(db,id):
+def list_records(db,id,offset=0,limit=None):
     source_or_404(db,id)
-    return [row(x) for x in db.scalars(select(Record).where(Record.source_id==id).order_by(Record.id))]
+    query=select(Record).where(Record.source_id==id).order_by(Record.id)
+    if offset:query=query.offset(offset)
+    if limit is not None:query=query.limit(limit)
+    return [row(x) for x in db.scalars(query)]
+def record_page(db,id,page=0,page_size=15):
+    """服务端分页：大文集也不把全部会话读进内存或发给浏览器。"""
+    source_or_404(db,id)
+    page=max(0,int(page));page_size=max(1,min(100,int(page_size)))
+    total=int(db.scalar(select(func.count()).select_from(Record).where(Record.source_id==id)) or 0)
+    items=list_records(db,id,page*page_size,page_size)
+    return {'items':items,'total':total,'page':page,'page_size':page_size,
+            'pages':max(1,(total+page_size-1)//page_size)}
 def add_records(db,user,id,data):
     source_or_404(db,id)
     validated=[];refs=set()

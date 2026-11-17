@@ -11,6 +11,6 @@ def create_source(data:SourceInput,db=Depends(db_session),u=Depends(writer)):ret
 @router.put('/sources/{id}')
 def update_source(id:int,data:SourceInput,db=Depends(db_session),u=Depends(writer)):return C.save(db,u,data,id)
 @router.get('/sources/{id}/records')
-def records(id:int,db=Depends(db_session),u=Depends(current_user)):return C.records(db,id)
+def records(id:int,page:int=0,page_size:int=15,db=Depends(db_session),u=Depends(current_user)):return C.records(db,id,page,page_size)
 @router.post('/sources/{id}/records')
 def add(id:int,data:RecordBatch,db=Depends(db_session),u=Depends(writer)):return C.add_records(db,u,id,data)

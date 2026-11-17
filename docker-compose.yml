@@ -35,6 +35,9 @@ services:
       JWT_SECRET: ${JWT_SECRET:-reading-transition-demo-secret-change-before-deployment}
       SEED_DEMO: ${SEED_DEMO:-true}
       ARTIFACT_DIR: /artifacts
+      MEMORY_LIMIT_MB: ${MEMORY_LIMIT_MB:-256}
+      INTAKE_BATCH: ${INTAKE_BATCH:-500}
+      COMPUTE_BATCH: ${COMPUTE_BATCH:-500}
       OPENBLAS_NUM_THREADS: 1
       OMP_NUM_THREADS: 1
     ports: ["${BACKEND_PORT:-19247}:8000"]

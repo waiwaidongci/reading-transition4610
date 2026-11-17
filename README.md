@@ -11,7 +11,7 @@
 1. 业务总览：批次、样本、任务与批准交付账册。
 2. 阅读文集：创建/修改来源说明、查看样本、用真实业务字段追加记录；列表分页。
 3. 分析配置：冻结来源、参数和全部样本，进入Redis队列。
-4. 完整结果：真实算法摘要、专属诊断、全部CSV导出和可恢复失败态。
+4. 完整结果：真实算法摘要、专属诊断、全部CSV导出和可恢复失败态；冻结数量、处理进度与峰值内存可见。
 5. 编辑衔接建议：分析师草案→负责人批准→阅读者下载批准快照。
 6. 审计：登录、来源修改、任务worker完成、业务说明批准等事件。
 
@@ -64,7 +64,19 @@ ReadingCollection / ReadingSession / TransitionRun / EditorialPlan 是核心实�
 - `min_count`：最少接续次数，默认 `3`。
 - `top_n`：保留接续规则数，默认 `20`。
 
-只统计同一会话内的相邻章节；提升度相对于所有接续边的目标章节基率，关联不代表编辑调整造成的因果效果。
+只统计同一会话内的相邻章节；提升度相对于所有接续边的目标章节基率，关联不代表编辑调整造成的因果效果。目标基率的分母始终是**全部接续边**，未达 `min_count` 与未进入 `top_n` 前列的边同样计入；结果页“分母核对”先给出规则涉及章节的到达/出发次数，再给出全局边数、不同接续边数与达标边数。
+
+### 大文集：百万会话与百万接续边
+
+原有实现把全部会话与接续边装进内存，大文集无法分析。现在受理与计算都按批完成，进程内存由批次大小而非文集规模决定。实测 100 万会话（每会话一个不同接续边、共 100 万种边）：受理峰值约 86 MB、10.7 秒，计算峰值约 93 MB、12.3 秒；每会话 2 条边（共 200 万条边）时受理峰值约 76 MB、9.5 秒，计算峰值约 53 MB、6.9 秒。两者都远低于 256 MB 上限。
+
+1. **受理起点冻结**：创建任务时以 `max(阅读会话主键)` 一次固定边界；此后按主键游标分批读取 `id <= 边界` 的已提交会话，受理开始后的并发追加不会混入。快照记录边界、条数、暂存目录与批次参数。
+2. **磁盘暂存**：每批会话以 JSONL 写入 `ARTIFACT_DIR/staging/run-<任务号>-<随机串>/`，SQLite 暂存库承担跨批会话去重、边计数、全局分母与排序。
+3. **跨批去重**：会话编号写入暂存库主键表，重复编号（同批或跨批）直接拒绝，错误消息可读。
+4. **结果稳定**：读取顺序与 `INTAKE_BATCH` / `COMPUTE_BATCH` 不改变行、摘要与诊断；排序键为提升度降序、次数降序、起点、终点。输入 SHA256 按固定写入顺序计算，可独立复算。
+5. **失败与清理**：磁盘暂存耗尽（ENOSPC/EDQUOT）或超过 `MEMORY_LIMIT_MB` 时任务标 `failed` 并保留明确原因；只清理本任务自己的暂存目录，不影响并发研究。进程中断的受理/计算任务在启动时收尾，计算任务在暂存文件完好时最多重排一次。
+6. **可观测量**：`/runs` 与 `/runs/{id}` 返回 `frozen_count`、`processed_count`、`progress`、`phase`、`peak_memory_kb`（另有受理/计算分段峰值）；结果页显示冻结数量、进度条与峰值内存。
+7. **小研究不变**：不超过 `INLINE_SNAPSHOT_LIMIT` 的研究仍把原始样本内联进快照，历史任务、结果导出与批准快照照常可读；来源样本列表改为服务端分页。
 
 失败态：业务字段缺失/非有限数值、参数越界、样本不足、退化特征或结构错误均明确拒绝或将任务标failed，错误消息保存在任务中。可回到来源或配置修正后重新执行，历史失败记录保留。
 
@@ -88,6 +100,7 @@ ReadingCollection / ReadingSession / TransitionRun / EditorialPlan 是核心实�
 ```text
 frontend/src/api, stores, types, components/common, hooks, pages, router, utils, constants
 backend/src/routes, controllers, services, models, schemas, middlewares, utils, constants, config
+backend/src/services/{algorithm,intake,staging,recovery}.py
 backend/scripts/seed_demo.py
 backend/migrations/001_initial.sql
 ```
@@ -102,6 +115,11 @@ backend/migrations/001_initial.sql
 | JWT_SECRET | `.env.example`演示值，部署前修改 |
 | DATABASE_URL / REDIS_URL | Compose内部连接，定义在compose的env锚点 |
 | ARTIFACT_DIR | `/artifacts`，后端worker共享 |
+| MEMORY_LIMIT_MB | `256`，受理/计算的分段内存上限；超限保留原因并清理本次暂存 |
+| INTAKE_BATCH / COMPUTE_BATCH | `500 / 500`，每批读取条数；只影响吞吐与内存，不改变结果 |
+| INTAKE_WORKERS | `2`，API 进程内并发受理线程上限 |
+| INLINE_SNAPSHOT_LIMIT | `5000`，不超过该条数的研究仍内联原始样本，保持旧页面可读 |
+| DIAGNOSTIC_NODE_LIMIT | `5000`，分母核对表内联章节上限，超出时只列出规则涉及章节 |
 
 共享枚举：`backend/src/constants/enums.py` 与 `frontend/src/constants/enums.js` 都定义 admin/analyst/viewer、queued/running/completed/failed、draft/approved。后端service检查对应字符串；README为全量值说明。共享前端组件table/status/chart/business跨总览、结果、配置与复核复用；actions hook和format utils负责交互/格式。后端errors与rate_limit是两个中间件。
 

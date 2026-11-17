@@ -12,6 +12,12 @@ from .services.runs import queue
 @asynccontextmanager
 async def lifespan(app):
     Base.metadata.create_all(engine)
+    from .config.migrations import migrate
+    from .services.recovery import recover_on_api_start
+    from .services.staging import ensure_staging_root
+    migrate()
+    ensure_staging_root()
+    recover_on_api_start()
     if os.getenv('SEED_DEMO','true')=='true':
         try:
             from scripts.seed_demo import seed
